@@ -435,6 +435,27 @@ class KineticsWriter(ResultCollectorProcess):
                           source='kinModCall',
                           attributes=attributes)
 
+
+
+    def makeM5CgffRecord(self, siteObs):
+
+        start = siteObs['tpl'] + 1
+        end = siteObs['tpl'] + 1
+
+        attributes = [('coverage', siteObs['coverage']),
+                      ('IPDRatio', siteObs['ipdRatio'])]
+
+        recordType = 'CG'
+        refName = siteObs['refId']
+        score = "%.3f" % siteObs['Ca5C']
+        strand = '+' if siteObs['strand'] == 0 else '-'
+
+        return Gff3Record(refName, start, end,
+                          type=recordType,
+                          score=score,
+                          strand=strand,
+                          source='kinModCall', attributes=attributes)
+
     @consumer
     def gffConsumer(self, filename):
         """
@@ -462,8 +483,8 @@ class KineticsWriter(ResultCollectorProcess):
                 siteObsList = (yield)
 
                 for siteObs in siteObsList:
-                    # self.snippetFunc is a function that return a reference
-                    # snippet given a template position and a strand
+                    true_modif = False
+                    # self.snippetFunc is a function that return a reference snippet given a template position and a strand
                     if snippetRef != siteObs['refId']:
                         self.snippetFunc = self.ipdModel.snippetFunc(
                             siteObs['refId'], 20, 20)
@@ -478,44 +499,64 @@ class KineticsWriter(ResultCollectorProcess):
                     #     - use the single site 'score' property as the gff score
                     #     - do not put this kind into the gff if it contains the a 'offTargetPeak' tag
 
+                    gffline = self.makeGffRecord(siteObs)
+                    attributes = str(gffline).split()[8].split(';')
+
+                    real_modif = str(gffline).split()[2]
+                    score_modif = str(gffline).split()[5]
+                    siteObs['type_modif'] = real_modif
+                    siteObs['score_modif'] = score_modif
+
+                    for attribute in attributes:
+                        key = attribute.split('=')[0]
+                        value = attribute.split('=')[1]
+                        siteObs[str(key)] = value
+
                     if siteObs['coverage'] > self.options.minCoverage:
+
                         # Case 1
-                        if 'modification' in siteObs and siteObs['modification'] != '.':
-                            gff.writeRecord(self.makeGffRecord(siteObs))
-
+                        if siteObs.has_key('modification') and siteObs['modification'] != '.':
+                            gff.writeRecord(gffline)
+                            true_modif = True
                         # Case 2
-                        elif siteObs['score'] > minScore and 'offTargetPeak' not in siteObs:
-                            gff.writeRecord(self.makeGffRecord(siteObs))
+                        elif siteObs['score'] > minScore and not siteObs.has_key('offTargetPeak'):
+                            gff.writeRecord(gffline)
+                            true_modif = True
+                        else:
+                            true_modif = False
+                    if true_modif:
+                        siteObs['modified'] = True
+                    else:
+                        siteObs['modified'] = False
+                        siteObs['type_modif'] = 'None'
 
-                    # FIXME: Try not filtering:
-                    # gff.writeRecord(self.makeGffRecord(siteObs))
+                    # Will be printed in sys.stdout for every position (then the pt_methyl or whatsoever will chose it it wants to keep anything)
 
+                    current_list = []
+
+                    # exec("siteObs = "+str(siteObs))
+
+                    for key in siteObs:
+                        current_list.append('{}:'.format(str(key)))
+                        if key != 'capped_values' and key != 'rawData':
+                            for elt in str(siteObs[str(key)]):
+                                if elt != '\n':
+                                    current_list.append("{}".format(str(elt)))
+                        else:
+                            current_list.append('None')
+                        current_list.append(';')
+                    # remove the last ';'
+                    current_list.pop(-1)
+                    # Adding the \n
+                    current_list.append('\n')
+                    output = ''.join(current_list)
+                    sys.stdout.write(output)
         except GeneratorExit:
             f.close()
             return
 
-    def makeM5CgffRecord(self, siteObs):
-
-        start = siteObs['tpl'] + 1
-        end = siteObs['tpl'] + 1
-
-        attributes = [('coverage', siteObs['coverage']),
-                      ('IPDRatio', siteObs['ipdRatio'])]
-
-        recordType = 'CG'
-        refName = siteObs['refId']
-        score = "%.3f" % siteObs['Ca5C']
-        strand = '+' if siteObs['strand'] == 0 else '-'
-
-        return Gff3Record(refName, start, end,
-                          type=recordType,
-                          score=score,
-                          strand=strand,
-                          source='kinModCall', attributes=attributes)
-
     @consumer
     def m5CgffConsumer(self, filename):
-
         f = self.openWriteHandle(filename)
         gff = GffWriter(f)
 
